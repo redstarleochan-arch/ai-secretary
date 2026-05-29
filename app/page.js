@@ -97,8 +97,8 @@ export default function Home() {
       setConnected(true);
       setStatus("Realtime 已啟動。開始講你要記低嘅嘢。");
     } catch (err) {
+      stopRealtime(false, true);
       setStatus("連接失敗：" + err.message);
-      stopRealtime(false);
     }
   }
 
