@@ -102,7 +102,7 @@ export default function Home() {
     }
   }
 
-  function stopRealtime(shouldAnalyze = false) {
+  function stopRealtime(shouldAnalyze = false, silent = false) {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
