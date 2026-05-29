@@ -5,22 +5,13 @@ export async function POST(req) {
     const sdp = await req.text();
 
     const sessionConfig = {
-      type: "realtime",
-      model: "gpt-realtime-mini",
-      output_modalities: ["text"],
-      instructions:
-        "You are an AI secretary for a Cantonese-speaking user. The user will dump tasks by voice. Do not generate long replies. Focus on accurate transcription and operational task capture.",
+      type: "transcription",
       audio: {
         input: {
           transcription: {
             model: "gpt-realtime-whisper",
             language: "zh",
             delay: "low"
-          },
-          turn_detection: {
-            type: "server_vad",
-            create_response: false,
-            interrupt_response: false
           }
         }
       }
@@ -39,16 +30,22 @@ export async function POST(req) {
       body: fd
     });
 
+    const responseText = await openaiRes.text();
+
     if (!openaiRes.ok) {
-      const errorText = await openaiRes.text();
-      return new Response(errorText, {
-        status: openaiRes.status
-      });
+      return Response.json(
+        {
+          success: false,
+          status: openaiRes.status,
+          error: responseText
+        },
+        {
+          status: openaiRes.status
+        }
+      );
     }
 
-    const answerSdp = await openaiRes.text();
-
-    return new Response(answerSdp, {
+    return new Response(responseText, {
       headers: {
         "Content-Type": "application/sdp"
       }
