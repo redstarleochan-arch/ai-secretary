@@ -4,109 +4,164 @@ import { useRef, useState } from "react";
 
 export default function Home() {
   const [text, setText] = useState("");
+  const [liveText, setLiveText] = useState("");
   const [result, setResult] = useState("");
-  const [recording, setRecording] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
 
-  const mediaRecorderRef = useRef(null);
-  const chunksRef = useRef([]);
+  const pcRef = useRef(null);
+  const dcRef = useRef(null);
+  const streamRef = useRef(null);
+  const textRef = useRef("");
 
-  async function startRecording() {
+  function appendTranscript(transcript) {
+    const clean = transcript.trim();
+    if (!clean) return;
+
+    const next = textRef.current
+      ? `${textRef.current}\n${clean}`
+      : clean;
+
+    textRef.current = next;
+    setText(next);
+  }
+
+  async function startRealtime() {
     try {
-      setStatus("準備錄音...");
+      setStatus("正在連接 OpenAI Realtime...");
       setResult("");
+      setLiveText("");
+
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: true
       });
 
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
+      streamRef.current = stream;
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => {
+        setStatus("已連接。你可以開始講嘢。停一停，文字會自動出現。");
+      };
+
+      dc.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data);
+
+          if (event.type === "conversation.item.input_audio_transcription.delta") {
+            setLiveText((prev) => prev + event.delta);
+          }
+
+          if (event.type === "conversation.item.input_audio_transcription.completed") {
+            appendTranscript(event.transcript || "");
+            setLiveText("");
+          }
+
+          if (event.type === "error") {
+            setStatus("Realtime error: " + (event.error?.message || "Unknown error"));
+          }
+        } catch (err) {
+          console.error("Data channel message parse error:", err);
         }
       };
 
-      mediaRecorder.onstop = async () => {
-        setLoading(true);
-        setStatus("正在轉文字...");
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-        const audioBlob = new Blob(chunksRef.current, {
-          type: "audio/webm",
-        });
-
-        const formData = new FormData();
-        formData.append("audio", audioBlob, "voice.webm");
-
-        const transcribeRes = await fetch("/api/transcribe", {
-          method: "POST",
-          body: formData,
-        });
-
-        const transcribeData = await transcribeRes.json();
-
-        if (!transcribeData.success) {
-          setStatus("語音轉文字失敗：" + transcribeData.error);
-          setLoading(false);
-          return;
+      const sdpResponse = await fetch("/api/realtime-session", {
+        method: "POST",
+        body: offer.sdp,
+        headers: {
+          "Content-Type": "application/sdp"
         }
+      });
 
-        const transcript = transcribeData.transcript;
-        setText(transcript);
-        setStatus("已轉文字，正在分析任務...");
+      if (!sdpResponse.ok) {
+        const errText = await sdpResponse.text();
+        throw new Error(errText);
+      }
 
-        await analyzeText(transcript);
-
-        setLoading(false);
-        setStatus("完成");
+      const answer = {
+        type: "answer",
+        sdp: await sdpResponse.text()
       };
 
-      mediaRecorder.start();
-      setRecording(true);
-      setStatus("錄音中，講低你要記嘅嘢...");
+      await pc.setRemoteDescription(answer);
+
+      setConnected(true);
+      setStatus("Realtime 已啟動。開始講你要記低嘅嘢。");
     } catch (err) {
-      setStatus("無法開始錄音：" + err.message);
+      setStatus("連接失敗：" + err.message);
+      stopRealtime(false);
     }
   }
 
-  function stopRecording() {
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+  function stopRealtime(shouldAnalyze = false) {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
 
-      mediaRecorderRef.current.stream
-        .getTracks()
-        .forEach((track) => track.stop());
+    if (dcRef.current) {
+      dcRef.current.close();
+      dcRef.current = null;
+    }
 
-      setRecording(false);
-      setStatus("錄音已停止");
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+
+    setConnected(false);
+    setStatus("已停止 Realtime。");
+
+    if (shouldAnalyze) {
+      setTimeout(() => {
+        analyzeText(textRef.current);
+      }, 500);
     }
   }
 
   async function analyzeText(inputText = text) {
     if (!inputText.trim()) {
-      setStatus("請先輸入或錄音");
+      setStatus("未有文字可以分析。請先講嘢，等 transcript 出現。");
       return;
     }
 
     setLoading(true);
     setStatus("正在分析任務...");
 
-    const res = await fetch("/api/classify", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text: inputText }),
-    });
+    try {
+      const res = await fetch("/api/classify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ text: inputText })
+      });
 
-    const data = await res.json();
-    setResult(JSON.stringify(data, null, 2));
+      const data = await res.json();
+      setResult(JSON.stringify(data, null, 2));
+      setStatus("完成");
+    } catch (err) {
+      setStatus("分析失敗：" + err.message);
+    }
+
     setLoading(false);
-    setStatus("完成");
+  }
+
+  function clearAll() {
+    textRef.current = "";
+    setText("");
+    setLiveText("");
+    setResult("");
+    setStatus("");
   }
 
   return (
@@ -114,14 +169,14 @@ export default function Home() {
       style={{
         padding: 20,
         fontFamily: "Arial",
-        maxWidth: 760,
-        margin: "0 auto",
+        maxWidth: 780,
+        margin: "0 auto"
       }}
     >
       <h1>AI Secretary</h1>
 
       <button
-        onClick={recording ? stopRecording : startRecording}
+        onClick={connected ? () => stopRealtime(false) : startRealtime}
         disabled={loading}
         style={{
           width: "100%",
@@ -129,48 +184,87 @@ export default function Home() {
           fontSize: 20,
           borderRadius: 12,
           border: "1px solid #333",
-          background: recording ? "#ffdddd" : "#e8f0ff",
-          marginBottom: 15,
+          background: connected ? "#ffdddd" : "#e8f0ff",
+          marginBottom: 12
         }}
       >
-        {recording ? "停止錄音" : "開始語音輸入"}
+        {connected ? "停止 Realtime 語音" : "開始 Realtime 語音"}
       </button>
 
-      <p
+      <button
+        onClick={() => stopRealtime(true)}
+        disabled={loading || !connected}
         style={{
-          minHeight: 24,
-          color: "#555",
+          width: "100%",
+          padding: "14px 20px",
+          fontSize: 16,
+          borderRadius: 10,
+          border: "1px solid #333",
+          marginBottom: 12
         }}
       >
-        {status}
-      </p>
+        停止並分析任務
+      </button>
+
+      <p style={{ minHeight: 24, color: "#555" }}>{status}</p>
+
+      {liveText && (
+        <div
+          style={{
+            padding: 12,
+            marginBottom: 12,
+            borderRadius: 8,
+            background: "#fff8d6",
+            border: "1px solid #e0c76a"
+          }}
+        >
+          <strong>即時聽寫中：</strong>
+          <div>{liveText}</div>
+        </div>
+      )}
 
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="你可以錄音，或者直接打字..."
+        onChange={(e) => {
+          textRef.current = e.target.value;
+          setText(e.target.value);
+        }}
+        placeholder="Realtime transcript 會出喺呢度；你亦可以手動修改..."
         style={{
           width: "100%",
-          height: 180,
+          height: 220,
           padding: 12,
           fontSize: 16,
           borderRadius: 8,
-          border: "1px solid #999",
+          border: "1px solid #999"
         }}
       />
 
-      <button
-        onClick={() => analyzeText()}
-        disabled={loading}
-        style={{
-          marginTop: 15,
-          padding: "12px 20px",
-          fontSize: 16,
-          borderRadius: 8,
-        }}
-      >
-        Analyze Tasks
-      </button>
+      <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
+        <button
+          onClick={() => analyzeText()}
+          disabled={loading}
+          style={{
+            padding: "12px 20px",
+            fontSize: 16,
+            borderRadius: 8
+          }}
+        >
+          Analyze Tasks
+        </button>
+
+        <button
+          onClick={clearAll}
+          disabled={loading || connected}
+          style={{
+            padding: "12px 20px",
+            fontSize: 16,
+            borderRadius: 8
+          }}
+        >
+          Clear
+        </button>
+      </div>
 
       {result && (
         <pre
@@ -181,7 +275,7 @@ export default function Home() {
             padding: 20,
             borderRadius: 10,
             overflow: "auto",
-            whiteSpace: "pre-wrap",
+            whiteSpace: "pre-wrap"
           }}
         >
           {result}
