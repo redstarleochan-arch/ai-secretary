@@ -2,7 +2,27 @@ export const runtime = "nodejs";
 
 export async function POST(req) {
   try {
+    if (!process.env.OPENAI_API_KEY) {
+      return Response.json(
+        {
+          success: false,
+          error: "Missing OPENAI_API_KEY in Vercel Environment Variables"
+        },
+        { status: 500 }
+      );
+    }
+
     const sdp = await req.text();
+
+    if (!sdp || !sdp.includes("v=0")) {
+      return Response.json(
+        {
+          success: false,
+          error: "Invalid SDP received from browser"
+        },
+        { status: 400 }
+      );
+    }
 
     const sessionConfig = {
       type: "transcription",
@@ -39,13 +59,12 @@ export async function POST(req) {
           status: openaiRes.status,
           error: responseText
         },
-        {
-          status: openaiRes.status
-        }
+        { status: openaiRes.status }
       );
     }
 
     return new Response(responseText, {
+      status: 200,
       headers: {
         "Content-Type": "application/sdp"
       }
@@ -56,9 +75,7 @@ export async function POST(req) {
         success: false,
         error: err.message
       },
-      {
-        status: 500
-      }
+      { status: 500 }
     );
   }
 }
