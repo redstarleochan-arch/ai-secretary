@@ -7,6 +7,7 @@ export default function Home() {
   const [liveText, setLiveText] = useState("");
   const [result, setResult] = useState("");
   const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
 
@@ -16,90 +17,33 @@ export default function Home() {
   const textRef = useRef("");
 
   function appendTranscript(transcript) {
-    const clean = transcript.trim();
+    const clean = (transcript || "").trim();
     if (!clean) return;
 
-    const next = textRef.current
-      ? `${textRef.current}\n${clean}`
-      : clean;
-
+    const next = textRef.current ? `${textRef.current}\n${clean}` : clean;
     textRef.current = next;
     setText(next);
   }
 
-  async function startRealtime() {
-    try {
-      setStatus("正在連接 OpenAI Realtime...");
-      setResult("");
-      setLiveText("");
-
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true
-      });
-
-      streamRef.current = stream;
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        setStatus("已連接。你可以開始講嘢。停一停，文字會自動出現。");
-      };
-
-      dc.onmessage = (message) => {
-        try {
-          const event = JSON.parse(message.data);
-
-          if (event.type === "conversation.item.input_audio_transcription.delta") {
-            setLiveText((prev) => prev + event.delta);
-          }
-
-          if (event.type === "conversation.item.input_audio_transcription.completed") {
-            appendTranscript(event.transcript || "");
-            setLiveText("");
-          }
-
-          if (event.type === "error") {
-            setStatus("Realtime error: " + (event.error?.message || "Unknown error"));
-          }
-        } catch (err) {
-          console.error("Data channel message parse error:", err);
-        }
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const sdpResponse = await fetch("/api/realtime-session", {
-        method: "POST",
-        body: offer.sdp,
-        headers: {
-          "Content-Type": "application/sdp"
-        }
-      });
-
-      if (!sdpResponse.ok) {
-        const errText = await sdpResponse.text();
-        throw new Error(errText);
+  function waitForIceGatheringComplete(pc) {
+    return new Promise((resolve) => {
+      if (pc.iceGatheringState === "complete") {
+        resolve();
+        return;
       }
 
-      const answer = {
-        type: "answer",
-        sdp: await sdpResponse.text()
-      };
+      function checkState() {
+        if (pc.iceGatheringState === "complete") {
+          pc.removeEventListener("icegatheringstatechange", checkState);
+          resolve();
+        }
+      }
 
-      await pc.setRemoteDescription(answer);
+      pc.addEventListener("icegatheringstatechange", checkState);
 
-      setConnected(true);
-      setStatus("Realtime 已啟動。開始講你要記低嘅嘢。");
-    } catch (err) {
-      stopRealtime(false, true);
-      setStatus("連接失敗：" + err.message);
-    }
+      // Fallback: don't wait forever
+      setTimeout(resolve, 3000);
+    });
   }
 
   function stopRealtime(shouldAnalyze = false, silent = false) {
@@ -119,12 +63,147 @@ export default function Home() {
     }
 
     setConnected(false);
-    setStatus("已停止 Realtime。");
+    setConnecting(false);
+
+    if (!silent) {
+      setStatus("已停止 Realtime。");
+    }
 
     if (shouldAnalyze) {
       setTimeout(() => {
         analyzeText(textRef.current);
       }, 500);
+    }
+  }
+
+  async function startRealtime() {
+    try {
+      setConnecting(true);
+      setStatus("正在開咪高峰...");
+      setResult("");
+      setLiveText("");
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("呢個 browser 唔支援咪高峰。請用 Chrome / Safari，並確保網址係 https。");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true
+      });
+
+      streamRef.current = stream;
+
+      setStatus("咪高峰已開，正在建立 Realtime 連線...");
+
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      pc.onconnectionstatechange = () => {
+        if (!pcRef.current) return;
+        setStatus(`WebRTC 狀態：${pc.connectionState}`);
+
+        if (
+          pc.connectionState === "failed" ||
+          pc.connectionState === "disconnected" ||
+          pc.connectionState === "closed"
+        ) {
+          setConnected(false);
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        console.log("ICE state:", pc.iceConnectionState);
+      };
+
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => {
+        setConnected(true);
+        setConnecting(false);
+        setStatus("已連接。你可以開始講嘢。停一停，文字會自動出現。");
+      };
+
+      dc.onclose = () => {
+        setConnected(false);
+        setConnecting(false);
+      };
+
+      dc.onerror = () => {
+        setStatus("Data channel 發生錯誤。請睇 Vercel logs 或重新整理再試。");
+      };
+
+      dc.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data);
+
+          console.log("Realtime event:", event);
+
+          if (event.type === "conversation.item.input_audio_transcription.delta") {
+            setLiveText((prev) => prev + (event.delta || ""));
+          }
+
+          if (event.type === "conversation.item.input_audio_transcription.completed") {
+            appendTranscript(event.transcript || "");
+            setLiveText("");
+          }
+
+          if (event.type === "conversation.item.input_audio_transcription.failed") {
+            setStatus("聽寫失敗：" + (event.error?.message || "Unknown transcription error"));
+          }
+
+          if (event.type === "error") {
+            setStatus("Realtime error: " + (event.error?.message || JSON.stringify(event.error)));
+          }
+        } catch (err) {
+          console.error("Data channel message parse error:", err, message.data);
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      setStatus("正在等待 ICE candidates...");
+      await waitForIceGatheringComplete(pc);
+
+      setStatus("正在向 OpenAI 建立 Realtime session...");
+
+      const sdpResponse = await fetch("/api/realtime-session", {
+        method: "POST",
+        body: pc.localDescription.sdp,
+        headers: {
+          "Content-Type": "application/sdp"
+        }
+      });
+
+      const responseText = await sdpResponse.text();
+
+      if (!sdpResponse.ok) {
+        let readableError = responseText;
+
+        try {
+          const parsed = JSON.parse(responseText);
+          readableError = parsed.error || JSON.stringify(parsed, null, 2);
+        } catch (_) {}
+
+        throw new Error(readableError);
+      }
+
+      const answer = {
+        type: "answer",
+        sdp: responseText
+      };
+
+      await pc.setRemoteDescription(answer);
+
+      setConnected(true);
+      setConnecting(false);
+      setStatus("Realtime 已啟動。開始講你要記低嘅嘢。");
+    } catch (err) {
+      stopRealtime(false, true);
+      setStatus("連接失敗：" + err.message);
     }
   }
 
@@ -176,7 +255,7 @@ export default function Home() {
       <h1>AI Secretary</h1>
 
       <button
-        onClick={connected ? () => stopRealtime(false) : startRealtime}
+        onClick={connected || connecting ? () => stopRealtime(false) : startRealtime}
         disabled={loading}
         style={{
           width: "100%",
@@ -184,11 +263,15 @@ export default function Home() {
           fontSize: 20,
           borderRadius: 12,
           border: "1px solid #333",
-          background: connected ? "#ffdddd" : "#e8f0ff",
+          background: connected || connecting ? "#ffdddd" : "#e8f0ff",
           marginBottom: 12
         }}
       >
-        {connected ? "停止 Realtime 語音" : "開始 Realtime 語音"}
+        {connected
+          ? "停止 Realtime 語音"
+          : connecting
+          ? "連接中... 撳呢度取消"
+          : "開始 Realtime 語音"}
       </button>
 
       <button
@@ -206,7 +289,9 @@ export default function Home() {
         停止並分析任務
       </button>
 
-      <p style={{ minHeight: 24, color: "#555" }}>{status}</p>
+      <p style={{ minHeight: 24, color: "#555", whiteSpace: "pre-wrap" }}>
+        {status}
+      </p>
 
       {liveText && (
         <div
@@ -255,7 +340,7 @@ export default function Home() {
 
         <button
           onClick={clearAll}
-          disabled={loading || connected}
+          disabled={loading || connected || connecting}
           style={{
             padding: "12px 20px",
             fontSize: 16,
