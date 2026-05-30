@@ -1,11 +1,5 @@
-import OpenAI from "openai";
-
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 async function fileToDataUrl(file) {
   const arrayBuffer = await file.arrayBuffer();
@@ -15,38 +9,84 @@ async function fileToDataUrl(file) {
   return `data:${mimeType};base64,${base64}`;
 }
 
+function trimError(text) {
+  if (!text) return "";
+  return text.length > 1200 ? text.slice(0, 1200) + "..." : text;
+}
+
+async function transcribeAudio(audioFile) {
+  const fd = new FormData();
+  fd.append("file", audioFile, audioFile.name || "audio.webm");
+  fd.append("model", "gpt-4o-mini-transcribe");
+  fd.append("response_format", "text");
+  fd.append(
+    "prompt",
+    "This is a Cantonese / Traditional Chinese work task dump. Transcribe accurately. Keep names, dates, deadlines, owners, risks, and follow-up details."
+  );
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: fd,
+  });
+
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(
+      `Transcription API failed. Status ${res.status}. ${trimError(text)}`
+    );
+  }
+
+  return text;
+}
+
 export async function POST(req) {
+  let stage = "start";
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       return Response.json(
         {
           success: false,
+          stage: "env",
           error: "Missing OPENAI_API_KEY in Vercel Environment Variables",
         },
         { status: 500 }
       );
     }
 
+    stage = "reading-form";
     const formData = await req.formData();
 
     const notes = formData.get("notes")?.toString() || "";
     const audio = formData.get("audio");
     const images = formData
       .getAll("images")
-      .filter((file) => file && typeof file.arrayBuffer === "function" && file.size > 0);
+      .filter(
+        (file) =>
+          file &&
+          typeof file.arrayBuffer === "function" &&
+          file.size > 0
+      );
 
     let transcript = "";
+    let audioInfo = null;
 
     if (audio && typeof audio.arrayBuffer === "function" && audio.size > 0) {
-      transcript = await openai.audio.transcriptions.create({
-        file: audio,
-        model: "gpt-4o-mini-transcribe",
-        response_format: "text",
-        prompt:
-          "This is a Cantonese / Traditional Chinese work task dump. Transcribe accurately. Keep names, dates, deadlines, owners, risks, and follow-up details.",
-      });
+      audioInfo = {
+        name: audio.name || "unknown",
+        type: audio.type || "unknown",
+        size: audio.size,
+      };
+
+      stage = "transcription";
+      transcript = await transcribeAudio(audio);
     }
 
+    stage = "image-conversion";
     const content = [
       {
         type: "text",
@@ -138,26 +178,47 @@ ${notes || "(沒有補充文字)"}
       });
     }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an operational AI secretary. Extract tasks, risks, waiting items, and follow-ups from messy Cantonese work notes, audio transcripts, and images.",
-        },
-        {
-          role: "user",
-          content,
-        },
-      ],
-      temperature: 0.2,
-      response_format: {
-        type: "json_object",
+    stage = "analysis";
+
+    const analysisRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an operational AI secretary. Extract tasks, risks, waiting items, and follow-ups from messy Cantonese work notes, audio transcripts, and images.",
+          },
+          {
+            role: "user",
+            content,
+          },
+        ],
+        temperature: 0.2,
+        response_format: {
+          type: "json_object",
+        },
+      }),
     });
 
-    const analysisText = completion.choices[0].message.content || "{}";
+    const analysisTextRaw = await analysisRes.text();
+
+    if (!analysisRes.ok) {
+      throw new Error(
+        `Analysis API failed. Status ${analysisRes.status}. ${trimError(
+          analysisTextRaw
+        )}`
+      );
+    }
+
+    const analysisJson = JSON.parse(analysisTextRaw);
+    const analysisText =
+      analysisJson.choices?.[0]?.message?.content || "{}";
 
     let analysis;
     try {
@@ -170,8 +231,10 @@ ${notes || "(沒有補充文字)"}
 
     return Response.json({
       success: true,
+      stage: "done",
       transcript,
       image_count: images.length,
+      audio_info: audioInfo,
       notes,
       analysis,
     });
@@ -179,7 +242,8 @@ ${notes || "(沒有補充文字)"}
     return Response.json(
       {
         success: false,
-        error: err.message,
+        stage,
+        error: err.message || "Unknown error",
       },
       { status: 500 }
     );
