@@ -3,231 +3,159 @@
 import { useRef, useState } from "react";
 
 export default function Home() {
-  const [text, setText] = useState("");
-  const [liveText, setLiveText] = useState("");
-  const [result, setResult] = useState("");
-  const [connected, setConnected] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [audioFile, setAudioFile] = useState(null);
+  const [imageFiles, setImageFiles] = useState([]);
+  const [recordedBlob, setRecordedBlob] = useState(null);
+  const [recordedUrl, setRecordedUrl] = useState("");
+  const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
 
-  const pcRef = useRef(null);
-  const dcRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
   const streamRef = useRef(null);
-  const textRef = useRef("");
 
-  function appendTranscript(transcript) {
-    const clean = (transcript || "").trim();
-    if (!clean) return;
+  function getBestAudioMimeType() {
+    const options = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4",
+      "audio/mpeg",
+    ];
 
-    const next = textRef.current ? `${textRef.current}\n${clean}` : clean;
-    textRef.current = next;
-    setText(next);
-  }
-
-  function waitForIceGatheringComplete(pc) {
-    return new Promise((resolve) => {
-      if (pc.iceGatheringState === "complete") {
-        resolve();
-        return;
+    for (const type of options) {
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type)) {
+        return type;
       }
+    }
 
-      function checkState() {
-        if (pc.iceGatheringState === "complete") {
-          pc.removeEventListener("icegatheringstatechange", checkState);
-          resolve();
-        }
-      }
-
-      pc.addEventListener("icegatheringstatechange", checkState);
-
-      // Fallback: don't wait forever
-      setTimeout(resolve, 3000);
-    });
+    return "";
   }
 
-  function stopRealtime(shouldAnalyze = false, silent = false) {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-
-    if (dcRef.current) {
-      dcRef.current.close();
-      dcRef.current = null;
-    }
-
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-
-    setConnected(false);
-    setConnecting(false);
-
-    if (!silent) {
-      setStatus("已停止 Realtime。");
-    }
-
-    if (shouldAnalyze) {
-      setTimeout(() => {
-        analyzeText(textRef.current);
-      }, 500);
-    }
-  }
-
-  async function startRealtime() {
+  async function startRecording() {
     try {
-      setConnecting(true);
+      setResult(null);
+      setRecordedBlob(null);
+      setRecordedUrl("");
       setStatus("正在開咪高峰...");
-      setResult("");
-      setLiveText("");
 
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("呢個 browser 唔支援咪高峰。請用 Chrome / Safari，並確保網址係 https。");
+        throw new Error("呢個 browser 唔支援錄音。請用 Chrome / Safari。");
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
 
       streamRef.current = stream;
+      chunksRef.current = [];
 
-      setStatus("咪高峰已開，正在建立 Realtime 連線...");
+      const mimeType = getBestAudioMimeType();
 
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
 
-      pc.onconnectionstatechange = () => {
-        if (!pcRef.current) return;
-        setStatus(`WebRTC 狀態：${pc.connectionState}`);
+      mediaRecorderRef.current = mediaRecorder;
 
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "disconnected" ||
-          pc.connectionState === "closed"
-        ) {
-          setConnected(false);
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
         }
       };
 
-      pc.oniceconnectionstatechange = () => {
-        console.log("ICE state:", pc.iceConnectionState);
-      };
+      mediaRecorder.onstop = () => {
+        const finalType = mediaRecorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: finalType });
 
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        setRecordedBlob(blob);
+        setRecordedUrl(URL.createObjectURL(blob));
+        setRecording(false);
+        setStatus("錄音完成。你可以再加圖片，然後 Analyze。");
 
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-
-      dc.onopen = () => {
-        setConnected(true);
-        setConnecting(false);
-        setStatus("已連接。你可以開始講嘢。停一停，文字會自動出現。");
-      };
-
-      dc.onclose = () => {
-        setConnected(false);
-        setConnecting(false);
-      };
-
-      dc.onerror = () => {
-        setStatus("Data channel 發生錯誤。請睇 Vercel logs 或重新整理再試。");
-      };
-
-      dc.onmessage = (message) => {
-        try {
-          const event = JSON.parse(message.data);
-
-          console.log("Realtime event:", event);
-
-          if (event.type === "conversation.item.input_audio_transcription.delta") {
-            setLiveText((prev) => prev + (event.delta || ""));
-          }
-
-          if (event.type === "conversation.item.input_audio_transcription.completed") {
-            appendTranscript(event.transcript || "");
-            setLiveText("");
-          }
-
-          if (event.type === "conversation.item.input_audio_transcription.failed") {
-            setStatus("聽寫失敗：" + (event.error?.message || "Unknown transcription error"));
-          }
-
-          if (event.type === "error") {
-            setStatus("Realtime error: " + (event.error?.message || JSON.stringify(event.error)));
-          }
-        } catch (err) {
-          console.error("Data channel message parse error:", err, message.data);
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
         }
       };
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      setStatus("正在等待 ICE candidates...");
-      await waitForIceGatheringComplete(pc);
-
-      setStatus("正在向 OpenAI 建立 Realtime session...");
-
-      const sdpResponse = await fetch("/api/realtime-session", {
-        method: "POST",
-        body: pc.localDescription.sdp,
-        headers: {
-          "Content-Type": "application/sdp"
-        }
-      });
-
-      const responseText = await sdpResponse.text();
-
-      if (!sdpResponse.ok) {
-        let readableError = responseText;
-
-        try {
-          const parsed = JSON.parse(responseText);
-          readableError = parsed.error || JSON.stringify(parsed, null, 2);
-        } catch (_) {}
-
-        throw new Error(readableError);
-      }
-
-      const answer = {
-        type: "answer",
-        sdp: responseText
-      };
-
-      await pc.setRemoteDescription(answer);
-
-      setConnected(true);
-      setConnecting(false);
-      setStatus("Realtime 已啟動。開始講你要記低嘅嘢。");
+      mediaRecorder.start();
+      setRecording(true);
+      setStatus("錄音中。講完撳「停止錄音」。");
     } catch (err) {
-      stopRealtime(false, true);
-      setStatus("連接失敗：" + err.message);
+      setStatus("錄音失敗：" + err.message);
+      setRecording(false);
     }
   }
 
-  async function analyzeText(inputText = text) {
-    if (!inputText.trim()) {
-      setStatus("未有文字可以分析。請先講嘢，等 transcript 出現。");
-      return;
+  function stopRecording() {
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
     }
+  }
 
-    setLoading(true);
-    setStatus("正在分析任務...");
+  function handleImagesChange(event) {
+    const files = Array.from(event.target.files || []);
+    setImageFiles(files);
+  }
 
+  function handleAudioUpload(event) {
+    const file = event.target.files?.[0] || null;
+    setAudioFile(file);
+
+    if (file) {
+      setRecordedBlob(null);
+      setRecordedUrl("");
+      setStatus("已選擇音訊檔：" + file.name);
+    }
+  }
+
+  async function analyzeEverything() {
     try {
-      const res = await fetch("/api/classify", {
+      setLoading(true);
+      setResult(null);
+      setStatus("正在分析...");
+
+      const formData = new FormData();
+
+      formData.append("notes", notes);
+
+      if (recordedBlob) {
+        const extension = recordedBlob.type.includes("mp4") ? "mp4" : "webm";
+        formData.append("audio", recordedBlob, `recording.${extension}`);
+      } else if (audioFile) {
+        formData.append("audio", audioFile, audioFile.name);
+      }
+
+      for (const image of imageFiles) {
+        formData.append("images", image, image.name);
+      }
+
+      if (!notes.trim() && !recordedBlob && !audioFile && imageFiles.length === 0) {
+        setStatus("請先錄音、上傳圖片，或者輸入文字。");
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/analyze-capture", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ text: inputText })
+        body: formData,
       });
 
       const data = await res.json();
-      setResult(JSON.stringify(data, null, 2));
-      setStatus("完成");
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || JSON.stringify(data));
+      }
+
+      setResult(data);
+      setStatus("完成。");
     } catch (err) {
       setStatus("分析失敗：" + err.message);
     }
@@ -236,10 +164,12 @@ export default function Home() {
   }
 
   function clearAll() {
-    textRef.current = "";
-    setText("");
-    setLiveText("");
-    setResult("");
+    setNotes("");
+    setAudioFile(null);
+    setImageFiles([]);
+    setRecordedBlob(null);
+    setRecordedUrl("");
+    setResult(null);
     setStatus("");
   }
 
@@ -248,123 +178,196 @@ export default function Home() {
       style={{
         padding: 20,
         fontFamily: "Arial",
-        maxWidth: 780,
-        margin: "0 auto"
+        maxWidth: 820,
+        margin: "0 auto",
       }}
     >
-      <h1>AI Secretary</h1>
+      <h1>AI Secretary Capture</h1>
 
-      <button
-        onClick={connected || connecting ? () => stopRealtime(false) : startRealtime}
-        disabled={loading}
+      <section
         style={{
-          width: "100%",
-          padding: "18px 20px",
-          fontSize: 20,
+          padding: 16,
+          border: "1px solid #ccc",
           borderRadius: 12,
-          border: "1px solid #333",
-          background: connected || connecting ? "#ffdddd" : "#e8f0ff",
-          marginBottom: 12
+          marginBottom: 16,
         }}
       >
-        {connected
-          ? "停止 Realtime 語音"
-          : connecting
-          ? "連接中... 撳呢度取消"
-          : "開始 Realtime 語音"}
-      </button>
+        <h2 style={{ marginTop: 0 }}>1. 錄音 / 上傳音訊</h2>
 
-      <button
-        onClick={() => stopRealtime(true)}
-        disabled={loading || !connected}
-        style={{
-          width: "100%",
-          padding: "14px 20px",
-          fontSize: 16,
-          borderRadius: 10,
-          border: "1px solid #333",
-          marginBottom: 12
-        }}
-      >
-        停止並分析任務
-      </button>
-
-      <p style={{ minHeight: 24, color: "#555", whiteSpace: "pre-wrap" }}>
-        {status}
-      </p>
-
-      {liveText && (
-        <div
-          style={{
-            padding: 12,
-            marginBottom: 12,
-            borderRadius: 8,
-            background: "#fff8d6",
-            border: "1px solid #e0c76a"
-          }}
-        >
-          <strong>即時聽寫中：</strong>
-          <div>{liveText}</div>
-        </div>
-      )}
-
-      <textarea
-        value={text}
-        onChange={(e) => {
-          textRef.current = e.target.value;
-          setText(e.target.value);
-        }}
-        placeholder="Realtime transcript 會出喺呢度；你亦可以手動修改..."
-        style={{
-          width: "100%",
-          height: 220,
-          padding: 12,
-          fontSize: 16,
-          borderRadius: 8,
-          border: "1px solid #999"
-        }}
-      />
-
-      <div style={{ display: "flex", gap: 10, marginTop: 15 }}>
         <button
-          onClick={() => analyzeText()}
+          onClick={recording ? stopRecording : startRecording}
           disabled={loading}
           style={{
-            padding: "12px 20px",
-            fontSize: 16,
-            borderRadius: 8
+            width: "100%",
+            padding: "18px 20px",
+            fontSize: 20,
+            borderRadius: 12,
+            border: "1px solid #333",
+            background: recording ? "#ffdddd" : "#e8f0ff",
+            marginBottom: 12,
           }}
         >
-          Analyze Tasks
+          {recording ? "停止錄音" : "開始錄音"}
+        </button>
+
+        <div style={{ marginBottom: 12 }}>
+          <label>
+            或者上傳音訊檔：
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={handleAudioUpload}
+              disabled={loading || recording}
+              style={{ display: "block", marginTop: 8 }}
+            />
+          </label>
+        </div>
+
+        {recordedUrl && (
+          <audio
+            controls
+            src={recordedUrl}
+            style={{ width: "100%", marginTop: 8 }}
+          />
+        )}
+
+        {audioFile && (
+          <p style={{ color: "#555" }}>
+            已選擇音訊：{audioFile.name}
+          </p>
+        )}
+      </section>
+
+      <section
+        style={{
+          padding: 16,
+          border: "1px solid #ccc",
+          borderRadius: 12,
+          marginBottom: 16,
+        }}
+      >
+        <h2 style={{ marginTop: 0 }}>2. 圖片 / 手寫 notes / 白板</h2>
+
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleImagesChange}
+          disabled={loading}
+        />
+
+        {imageFiles.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <strong>已選擇圖片：</strong>
+            <ul>
+              {imageFiles.map((file, index) => (
+                <li key={`${file.name}-${index}`}>{file.name}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      <section
+        style={{
+          padding: 16,
+          border: "1px solid #ccc",
+          borderRadius: 12,
+          marginBottom: 16,
+        }}
+      >
+        <h2 style={{ marginTop: 0 }}>3. 補充文字</h2>
+
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="例如：老闆今日問過 invoice；Alex 未覆；如果星期五前唔處理會出事..."
+          style={{
+            width: "100%",
+            height: 160,
+            padding: 12,
+            fontSize: 16,
+            borderRadius: 8,
+            border: "1px solid #999",
+          }}
+        />
+      </section>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <button
+          onClick={analyzeEverything}
+          disabled={loading || recording}
+          style={{
+            flex: 1,
+            padding: "16px 20px",
+            fontSize: 18,
+            borderRadius: 10,
+            border: "1px solid #333",
+            background: "#e8f0ff",
+          }}
+        >
+          {loading ? "分析中..." : "Analyze Everything"}
         </button>
 
         <button
           onClick={clearAll}
-          disabled={loading || connected || connecting}
+          disabled={loading || recording}
           style={{
-            padding: "12px 20px",
-            fontSize: 16,
-            borderRadius: 8
+            padding: "16px 20px",
+            fontSize: 18,
+            borderRadius: 10,
+            border: "1px solid #333",
           }}
         >
           Clear
         </button>
       </div>
 
+      <p style={{ minHeight: 24, color: "#555", whiteSpace: "pre-wrap" }}>
+        {status}
+      </p>
+
       {result && (
-        <pre
+        <section
           style={{
-            marginTop: 30,
-            background: "#111",
-            color: "#0f0",
-            padding: 20,
-            borderRadius: 10,
-            overflow: "auto",
-            whiteSpace: "pre-wrap"
+            marginTop: 24,
+            padding: 16,
+            border: "1px solid #ccc",
+            borderRadius: 12,
           }}
         >
-          {result}
-        </pre>
+          <h2>結果</h2>
+
+          {result.transcript && (
+            <>
+              <h3>語音轉錄</h3>
+              <pre
+                style={{
+                  background: "#f5f5f5",
+                  padding: 12,
+                  borderRadius: 8,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {result.transcript}
+              </pre>
+            </>
+          )}
+
+          <h3>任務分析</h3>
+          <pre
+            style={{
+              background: "#111",
+              color: "#0f0",
+              padding: 20,
+              borderRadius: 10,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {JSON.stringify(result.analysis, null, 2)}
+          </pre>
+        </section>
       )}
     </main>
   );
