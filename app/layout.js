@@ -1,6 +1,6 @@
 export const metadata = {
   title: "AI Secretary",
-  description: "Voice-first AI task secretary",
+  description: "AI Secretary Capture using Gemini",
 };
 
 export default function RootLayout({ children }) {
