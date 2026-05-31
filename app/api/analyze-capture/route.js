@@ -1,58 +1,76 @@
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-async function fileToDataUrl(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const base64 = buffer.toString("base64");
-  const mimeType = file.type || "image/jpeg";
-  return `data:${mimeType};base64,${base64}`;
-}
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 function trimError(text) {
   if (!text) return "";
-  return text.length > 1200 ? text.slice(0, 1200) + "..." : text;
+  return text.length > 1500 ? text.slice(0, 1500) + "..." : text;
 }
 
-async function transcribeAudio(audioFile) {
-  const fd = new FormData();
-  fd.append("file", audioFile, audioFile.name || "audio.webm");
-  fd.append("model", "gpt-4o-mini-transcribe");
-  fd.append("response_format", "text");
-  fd.append(
-    "prompt",
-    "This is a Cantonese / Traditional Chinese work task dump. Transcribe accurately. Keep names, dates, deadlines, owners, risks, and follow-up details."
-  );
+async function fileToBase64(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  return buffer.toString("base64");
+}
 
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: fd,
-  });
+function normalizeMimeType(file) {
+  const type = file.type || "";
 
-  const text = await res.text();
+  if (type.startsWith("image/")) return type;
 
-  if (!res.ok) {
-    throw new Error(
-      `Transcription API failed. Status ${res.status}. ${trimError(text)}`
-    );
+  if (type === "audio/mpeg") return "audio/mp3";
+  if (type === "audio/mp3") return "audio/mp3";
+  if (type === "audio/wav" || type === "audio/x-wav") return "audio/wav";
+  if (type === "audio/aac") return "audio/aac";
+  if (type === "audio/mp4") return "audio/mp4";
+  if (type === "audio/x-m4a") return "audio/mp4";
+  if (type === "audio/ogg") return "audio/ogg";
+  if (type === "audio/flac") return "audio/flac";
+  if (type === "audio/aiff") return "audio/aiff";
+
+  // Chrome browser recording often gives audio/webm.
+  // Gemini may or may not accept it depending on current API support.
+  // Keep it as-is so the API returns a clear error if unsupported.
+  if (type === "audio/webm" || type.includes("webm")) return "audio/webm";
+
+  return type || "application/octet-stream";
+}
+
+function extractGeminiText(data) {
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  return parts.map((part) => part.text || "").join("\n").trim();
+}
+
+function parseJsonLoose(text) {
+  if (!text) return {};
+
+  let cleaned = text.trim();
+
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.replace(/^```json/i, "").replace(/```$/i, "").trim();
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```/i, "").replace(/```$/i, "").trim();
   }
 
-  return text;
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    return { raw: text };
+  }
 }
 
 export async function POST(req) {
   let stage = "start";
 
   try {
-    if (!process.env.OPENAI_API_KEY) {
+    if (!process.env.GEMINI_API_KEY) {
       return Response.json(
         {
           success: false,
+          provider: "gemini",
           stage: "env",
-          error: "Missing OPENAI_API_KEY in Vercel Environment Variables",
+          error: "Missing GEMINI_API_KEY in Vercel Environment Variables",
         },
         { status: 500 }
       );
@@ -62,7 +80,9 @@ export async function POST(req) {
     const formData = await req.formData();
 
     const notes = formData.get("notes")?.toString() || "";
+
     const audio = formData.get("audio");
+
     const images = formData
       .getAll("images")
       .filter(
@@ -72,36 +92,38 @@ export async function POST(req) {
           file.size > 0
       );
 
-    let transcript = "";
-    let audioInfo = null;
+    const audioInfo =
+      audio && typeof audio.arrayBuffer === "function" && audio.size > 0
+        ? {
+            name: audio.name || "unknown",
+            type: audio.type || "unknown",
+            normalized_type: normalizeMimeType(audio),
+            size: audio.size,
+          }
+        : null;
 
-    if (audio && typeof audio.arrayBuffer === "function" && audio.size > 0) {
-      audioInfo = {
-        name: audio.name || "unknown",
-        type: audio.type || "unknown",
-        size: audio.size,
-      };
+    stage = "building-gemini-parts";
 
-      stage = "transcription";
-      transcript = await transcribeAudio(audio);
-    }
+    const instruction = `
+你係一個 AI 秘書 / Chief of Staff。
 
-    stage = "image-conversion";
-    const content = [
-      {
-        type: "text",
-        text: `
-你係一個 AI 秘書 / Chief of Staff。用戶會提交：
-1. 語音轉錄文字
+用戶會提交：
+1. 錄音檔，可能係廣東話工作 dump
 2. 圖片，例如手寫 notes、白板、表格、截圖
 3. 額外文字補充
 
-你要將所有資料整合，抽取工作任務。
+你要直接從錄音、圖片、文字入面抽取工作任務。
+如果有錄音，請先理解/轉錄內容，再整合入任務分析。
+如果有圖片，請讀取圖片入面嘅文字、手寫內容、表格或白板資訊。
 
-請輸出 JSON，格式必須係：
+請只輸出 JSON，唔好加 markdown，唔好加解釋。
+
+JSON 格式必須係：
 
 {
   "summary": "一句總結",
+  "audio_transcript": "如果有錄音，請在這裏放廣東話/繁中轉錄；沒有就寫空字串",
+  "image_notes": "如果有圖片，請在這裏總結圖片內容；沒有就寫空字串",
   "top_3_risks": [
     {
       "title": "",
@@ -157,82 +179,93 @@ export async function POST(req) {
 - 如果資料唔清楚，要標記 "unclear"，唔好亂作。
 - 用繁體中文 / 港式廣東話，簡潔直接。
 
-語音轉錄：
-${transcript || "(沒有錄音)"}
-
 用戶補充文字：
 ${notes || "(沒有補充文字)"}
-        `,
+
+檔案狀態：
+- audio: ${audioInfo ? JSON.stringify(audioInfo) : "沒有錄音"}
+- images: ${images.length} 張
+`;
+
+    const parts = [
+      {
+        text: instruction,
       },
     ];
 
-    for (const image of images) {
-      const dataUrl = await fileToDataUrl(image);
+    if (audio && typeof audio.arrayBuffer === "function" && audio.size > 0) {
+      const audioBase64 = await fileToBase64(audio);
 
-      content.push({
-        type: "image_url",
-        image_url: {
-          url: dataUrl,
-          detail: "high",
+      parts.push({
+        inlineData: {
+          mimeType: normalizeMimeType(audio),
+          data: audioBase64,
         },
       });
     }
 
-    stage = "analysis";
+    for (const image of images) {
+      const imageBase64 = await fileToBase64(image);
 
-    const analysisRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      parts.push({
+        inlineData: {
+          mimeType: normalizeMimeType(image),
+          data: imageBase64,
+        },
+      });
+    }
+
+    stage = "gemini-generate-content";
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
+    const geminiRes = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "x-goog-api-key": process.env.GEMINI_API_KEY,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an operational AI secretary. Extract tasks, risks, waiting items, and follow-ups from messy Cantonese work notes, audio transcripts, and images.",
-          },
+        contents: [
           {
             role: "user",
-            content,
+            parts,
           },
         ],
-        temperature: 0.2,
-        response_format: {
-          type: "json_object",
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
         },
       }),
     });
 
-    const analysisTextRaw = await analysisRes.text();
+    const rawText = await geminiRes.text();
 
-    if (!analysisRes.ok) {
+    if (!geminiRes.ok) {
       throw new Error(
-        `Analysis API failed. Status ${analysisRes.status}. ${trimError(
-          analysisTextRaw
-        )}`
+        `Gemini API failed. Status ${geminiRes.status}. ${trimError(rawText)}`
       );
     }
 
-    const analysisJson = JSON.parse(analysisTextRaw);
-    const analysisText =
-      analysisJson.choices?.[0]?.message?.content || "{}";
+    let geminiJson;
 
-    let analysis;
     try {
-      analysis = JSON.parse(analysisText);
+      geminiJson = JSON.parse(rawText);
     } catch (err) {
-      analysis = {
-        raw: analysisText,
-      };
+      throw new Error(
+        "Gemini returned non-JSON HTTP response: " + trimError(rawText)
+      );
     }
+
+    const outputText = extractGeminiText(geminiJson);
+    const analysis = parseJsonLoose(outputText);
 
     return Response.json({
       success: true,
+      provider: "gemini",
+      model: GEMINI_MODEL,
       stage: "done",
-      transcript,
+      transcript: analysis.audio_transcript || "",
       image_count: images.length,
       audio_info: audioInfo,
       notes,
@@ -242,6 +275,8 @@ ${notes || "(沒有補充文字)"}
     return Response.json(
       {
         success: false,
+        provider: "gemini",
+        model: GEMINI_MODEL,
         stage,
         error: err.message || "Unknown error",
       },
