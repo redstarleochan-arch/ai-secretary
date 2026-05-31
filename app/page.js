@@ -167,6 +167,12 @@ function displayDate(key) {
   return `${year}年${Number(month)}月${Number(day)}日`;
 }
 
+function taskCompletedDate(task) {
+  if (task.completedDate) return task.completedDate;
+  if (task.completedAt) return dateKey(new Date(task.completedAt));
+  return "";
+}
+
 function buildMonthDays(monthDate) {
   const year = monthDate.getFullYear();
   const month = monthDate.getMonth();
@@ -364,7 +370,7 @@ function Navigation({ view, setView, openCount, completedCount }) {
 
 function RecordsView({ completedTasks, monthDate, setMonthDate, selectedDate, setSelectedDate }) {
   const completedByDate = completedTasks.reduce((groups, task) => {
-    const key = task.completedAt ? task.completedAt.slice(0, 10) : "";
+    const key = taskCompletedDate(task);
     if (!key) return groups;
     return { ...groups, [key]: [...(groups[key] || []), task] };
   }, {});
@@ -631,9 +637,12 @@ export default function Home() {
   }
 
   function markDone(id) {
+    const now = new Date();
     persist(
       tasks.map((task) =>
-        task.id === id ? { ...task, status: "done", completedAt: new Date().toISOString() } : task
+        task.id === id
+          ? { ...task, status: "done", completedAt: now.toISOString(), completedDate: dateKey(now) }
+          : task
       )
     );
   }
