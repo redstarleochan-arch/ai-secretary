@@ -143,7 +143,38 @@ function tasksFromAnalysis(analysis) {
 
 function getInitialView() {
   if (typeof window === "undefined") return "capture";
-  return window.location.hash === "#tasks" ? "tasks" : "capture";
+  if (window.location.hash === "#tasks") return "tasks";
+  if (window.location.hash === "#records") return "records";
+  return "capture";
+}
+
+function dateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function monthKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function displayDate(key) {
+  if (!key) return "";
+  const [year, month, day] = key.split("-");
+  return `${year}年${Number(month)}月${Number(day)}日`;
+}
+
+function buildMonthDays(monthDate) {
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const blanks = Array.from({ length: firstDay.getDay() }, () => null);
+  const days = Array.from({ length: daysInMonth }, (_, index) => new Date(year, month, index + 1));
+  return [...blanks, ...days];
 }
 
 function TaskCard({
@@ -170,113 +201,70 @@ function TaskCard({
       onDragOver={(event) => onDragOverTask(event, task.id)}
       onDrop={(event) => onDropOnTask(event, task.category, task.id)}
       style={{
-        border: "1px solid #e5e7eb",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 8,
+        alignItems: "center",
+        border: "1px solid #d7dde5",
         borderLeft: `5px solid ${category.color}`,
         borderRadius: 8,
-        padding: 12,
-        background: category.bg,
-        opacity: task.status === "done" ? 0.62 : 1,
+        padding: 10,
+        background: "#fff",
+        color: "#111827",
         boxShadow: dragOverTaskId === task.id ? "0 0 0 2px #111827 inset" : "none",
       }}
     >
-      <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <strong style={{ color: category.color }}>{category.label}</strong>
-            <h4 style={{ margin: "6px 0", fontSize: 17 }}>{task.title}</h4>
-          </div>
-          <span
-            aria-hidden="true"
-            style={{
-              color: "#6b7280",
-              cursor: "grab",
-              fontSize: 22,
-              lineHeight: 1,
-              paddingTop: 2,
-            }}
-          >
-            ::
-          </span>
-        </div>
-
-        {task.nextAction && (
-          <p style={{ margin: 0 }}>
-            <strong>下一步：</strong>
-            {task.nextAction}
-          </p>
-        )}
-        {task.person && (
-          <p style={{ margin: 0, color: "#4b5563" }}>
-            <strong>相關人：</strong>
-            {task.person}
-          </p>
-        )}
-        {task.due && (
-          <p style={{ margin: 0, color: "#4b5563" }}>
-            <strong>時間：</strong>
-            {task.due}
-          </p>
-        )}
-        {task.reason && (
-          <p style={{ margin: 0, color: "#4b5563" }}>
-            <strong>原因：</strong>
-            {task.reason}
-          </p>
-        )}
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8 }}>
-          <label style={{ display: "grid", gap: 4, fontSize: 14, color: "#4b5563" }}>
-            改分類
-            <select
-              value={task.category}
-              onChange={(event) => onMoveCategory(task.id, event.target.value)}
-              style={{
-                width: "100%",
-                minHeight: 38,
-                border: "1px solid #9ca3af",
-                borderRadius: 8,
-                background: "#fff",
-                padding: "0 8px",
-                fontSize: 15,
-              }}
-            >
-              {CATEGORIES.map((item) => (
-                <option key={item.key} value={item.key}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <button
-            onClick={() => onMoveStep(task.id, -1)}
-            disabled={index === 0}
-            style={{ ...buttonStyle, minWidth: 44, padding: 8, background: "#fff" }}
-            aria-label="上移"
-          >
-            ↑
-          </button>
-          <button
-            onClick={() => onMoveStep(task.id, 1)}
-            disabled={index === columnLength - 1}
-            style={{ ...buttonStyle, minWidth: 44, padding: 8, background: "#fff" }}
-            aria-label="下移"
-          >
-            ↓
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {task.status !== "done" && (
-            <button onClick={() => onDone(task.id)} style={{ ...buttonStyle, background: "#dcfce7" }}>
-              完成
-            </button>
-          )}
-          <button onClick={() => onDelete(task.id)} style={{ ...buttonStyle, background: "#fff" }}>
-            刪除
-          </button>
-        </div>
-      </div>
+      <input
+        type="checkbox"
+        aria-label={`完成 ${task.title}`}
+        onChange={() => onDone(task.id)}
+        style={{ width: 22, height: 22 }}
+      />
+      <strong style={{ flex: "1 1 260px", minWidth: 0, overflowWrap: "anywhere", fontSize: 16 }}>
+        {task.title}
+      </strong>
+      <select
+        aria-label="改分類"
+        value={task.category}
+        onChange={(event) => onMoveCategory(task.id, event.target.value)}
+        style={{
+          width: 190,
+          maxWidth: "100%",
+          minHeight: 36,
+          border: "1px solid #9ca3af",
+          borderRadius: 8,
+          background: "#fff",
+          color: "#111827",
+          padding: "0 8px",
+          fontSize: 14,
+          marginLeft: "auto",
+        }}
+      >
+        {CATEGORIES.map((item) => (
+          <option key={item.key} value={item.key}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={() => onMoveStep(task.id, -1)}
+        disabled={index === 0}
+        style={{ ...buttonStyle, minWidth: 38, padding: 6, background: "#fff" }}
+        aria-label="上移"
+      >
+        ↑
+      </button>
+      <button
+        onClick={() => onMoveStep(task.id, 1)}
+        disabled={index === columnLength - 1}
+        style={{ ...buttonStyle, minWidth: 38, padding: 6, background: "#fff" }}
+        aria-label="下移"
+      >
+        ↓
+      </button>
+      <button onClick={() => onDelete(task.id)} style={{ ...buttonStyle, padding: "7px 10px", background: "#fff" }}>
+        刪除
+      </button>
     </article>
   );
 }
@@ -337,7 +325,7 @@ function TaskColumn({
   );
 }
 
-function Navigation({ view, setView, openCount }) {
+function Navigation({ view, setView, openCount, completedCount }) {
   return (
     <nav style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
       <button
@@ -360,7 +348,97 @@ function Navigation({ view, setView, openCount }) {
       >
         Task list ({openCount})
       </button>
+      <button
+        onClick={() => setView("records")}
+        style={{
+          ...buttonStyle,
+          background: view === "records" ? "#111827" : "#fff",
+          color: view === "records" ? "#fff" : "#111827",
+        }}
+      >
+        紀錄 ({completedCount})
+      </button>
     </nav>
+  );
+}
+
+function RecordsView({ completedTasks, monthDate, setMonthDate, selectedDate, setSelectedDate }) {
+  const completedByDate = completedTasks.reduce((groups, task) => {
+    const key = task.completedAt ? task.completedAt.slice(0, 10) : "";
+    if (!key) return groups;
+    return { ...groups, [key]: [...(groups[key] || []), task] };
+  }, {});
+  const monthDays = buildMonthDays(monthDate);
+  const selectedTasks = completedByDate[selectedDate] || [];
+  const monthLabel = `${monthDate.getFullYear()}年${monthDate.getMonth() + 1}月`;
+
+  function changeMonth(offset) {
+    setMonthDate(new Date(monthDate.getFullYear(), monthDate.getMonth() + offset, 1));
+  }
+
+  return (
+    <section style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>完成紀錄</h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => changeMonth(-1)} style={{ ...buttonStyle, background: "#fff" }}>
+            上月
+          </button>
+          <button onClick={() => changeMonth(1)} style={{ ...buttonStyle, background: "#fff" }}>
+            下月
+          </button>
+        </div>
+      </div>
+
+      <h3 style={{ marginBottom: 8 }}>{monthLabel}</h3>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+        {["日", "一", "二", "三", "四", "五", "六"].map((label) => (
+          <strong key={label} style={{ textAlign: "center", color: "#6b7280" }}>
+            {label}
+          </strong>
+        ))}
+        {monthDays.map((day, index) => {
+          if (!day) return <div key={`blank-${index}`} />;
+          const key = dateKey(day);
+          const count = completedByDate[key]?.length || 0;
+          const selected = key === selectedDate;
+          return (
+            <button
+              key={key}
+              onClick={() => setSelectedDate(key)}
+              style={{
+                minHeight: 72,
+                border: selected ? "2px solid #111827" : "1px solid #d7dde5",
+                borderRadius: 8,
+                background: count ? "#dcfce7" : "#fff",
+                color: "#111827",
+                textAlign: "left",
+                padding: 8,
+                cursor: "pointer",
+              }}
+            >
+              <strong>{day.getDate()}</strong>
+              <span style={{ display: "block", marginTop: 8, color: "#166534" }}>
+                {count ? `${count} 件` : ""}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <h3>{selectedDate ? displayDate(selectedDate) : "揀一日睇紀錄"}</h3>
+        {selectedTasks.length === 0 ? (
+          <p style={{ color: "#6b7280" }}>呢日暫時冇完成紀錄。</p>
+        ) : (
+          <ul style={{ display: "grid", gap: 8, paddingLeft: 20 }}>
+            {selectedTasks.map((task) => (
+              <li key={task.id}>{task.title}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -378,6 +456,8 @@ export default function Home() {
   const [draggedTaskId, setDraggedTaskId] = useState("");
   const [dragOverCategory, setDragOverCategory] = useState("");
   const [dragOverTaskId, setDragOverTaskId] = useState("");
+  const [monthDate, setMonthDate] = useState(() => new Date());
+  const [selectedDate, setSelectedDate] = useState(() => dateKey(new Date()));
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -398,7 +478,8 @@ export default function Home() {
   function setView(nextView) {
     setViewState(nextView);
     if (typeof window !== "undefined") {
-      window.history.pushState(null, "", nextView === "tasks" ? "#tasks" : "#input");
+      const hash = nextView === "tasks" ? "#tasks" : nextView === "records" ? "#records" : "#input";
+      window.history.pushState(null, "", hash);
     }
   }
 
@@ -550,7 +631,11 @@ export default function Home() {
   }
 
   function markDone(id) {
-    persist(tasks.map((task) => (task.id === id ? { ...task, status: "done" } : task)));
+    persist(
+      tasks.map((task) =>
+        task.id === id ? { ...task, status: "done", completedAt: new Date().toISOString() } : task
+      )
+    );
   }
 
   function deleteTask(id) {
@@ -645,6 +730,13 @@ export default function Home() {
     () => sortTasks(tasks.filter((task) => task.status !== "done")),
     [tasks]
   );
+  const completedTasks = useMemo(
+    () =>
+      sortTasks(tasks.filter((task) => task.status === "done")).sort(
+        (a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0)
+      ),
+    [tasks]
+  );
   const todayTasks = openTasks.filter(
     (task) => task.category === "critical" || task.category === "follow_up"
   );
@@ -675,7 +767,12 @@ export default function Home() {
             講低一件事，先轉文字，再分成 Critical / Waiting / Follow-up / Someday。
           </p>
         </div>
-        <Navigation view={view} setView={setView} openCount={openTasks.length} />
+        <Navigation
+          view={view}
+          setView={setView}
+          openCount={openTasks.length}
+          completedCount={completedTasks.length}
+        />
       </header>
 
       {view === "capture" ? (
@@ -769,6 +866,14 @@ export default function Home() {
             </p>
           </div>
         </section>
+      ) : view === "records" ? (
+        <RecordsView
+          completedTasks={completedTasks}
+          monthDate={monthDate}
+          setMonthDate={setMonthDate}
+          selectedDate={selectedDate}
+          setSelectedDate={setSelectedDate}
+        />
       ) : (
         <>
           <section style={{ ...cardStyle, background: "#111827", color: "#fff", marginBottom: 18 }}>
@@ -799,17 +904,11 @@ export default function Home() {
           </section>
 
           <section style={{ marginBottom: 18 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-              <h2>Task list</h2>
-              <button onClick={clearCompleted} style={{ ...buttonStyle, background: "#fff" }}>
-                清走已完成
-              </button>
-            </div>
+            <h2>Task list</h2>
 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
                 gap: 12,
               }}
             >
