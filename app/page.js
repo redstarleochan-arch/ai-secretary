@@ -190,6 +190,7 @@ function TaskCard({
   dragOverTaskId,
   onDone,
   onDelete,
+  onRename,
   onMoveCategory,
   onMoveStep,
   onDragStart,
@@ -226,9 +227,22 @@ function TaskCard({
         onChange={() => onDone(task.id)}
         style={{ width: 22, height: 22 }}
       />
-      <strong style={{ flex: "1 1 260px", minWidth: 0, overflowWrap: "anywhere", fontSize: 16 }}>
-        {task.title}
-      </strong>
+      <input
+        aria-label="修改任務"
+        value={task.title}
+        onChange={(event) => onRename(task.id, event.target.value)}
+        style={{
+          flex: "1 1 260px",
+          minWidth: 0,
+          border: "1px solid transparent",
+          borderBottomColor: "#d7dde5",
+          background: "#fff",
+          color: "#111827",
+          fontSize: 16,
+          fontWeight: 700,
+          padding: "7px 6px",
+        }}
+      />
       <select
         aria-label="改分類"
         value={task.category}
@@ -282,6 +296,7 @@ function TaskColumn({
   dragOverTaskId,
   onDone,
   onDelete,
+  onRename,
   onMoveCategory,
   onMoveStep,
   onDragStart,
@@ -317,6 +332,7 @@ function TaskColumn({
               dragOverTaskId={dragOverTaskId}
               onDone={onDone}
               onDelete={onDelete}
+              onRename={onRename}
               onMoveCategory={onMoveCategory}
               onMoveStep={onMoveStep}
               onDragStart={onDragStart}
@@ -685,6 +701,10 @@ export default function Home() {
     persist(tasks.filter((task) => task.id !== id));
   }
 
+  function renameTask(id, title) {
+    persist(tasks.map((task) => (task.id === id ? { ...task, title } : task)));
+  }
+
   function clearCompleted() {
     persist(tasks.filter((task) => task.status !== "done"));
   }
@@ -935,6 +955,7 @@ export default function Home() {
                     dragOverTaskId={dragOverTaskId}
                     onDone={markDone}
                     onDelete={deleteTask}
+                    onRename={renameTask}
                     onMoveCategory={moveCategory}
                     onMoveStep={moveStep}
                     onDragStart={handleDragStart}
@@ -965,6 +986,7 @@ export default function Home() {
                   dragOverTaskId={dragOverTaskId}
                   onDone={markDone}
                   onDelete={deleteTask}
+                  onRename={renameTask}
                   onMoveCategory={moveCategory}
                   onMoveStep={moveStep}
                   onDragStart={handleDragStart}
