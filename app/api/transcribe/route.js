@@ -2,10 +2,6 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 export async function POST(req) {
   try {
     const formData = await req.formData();
@@ -17,6 +13,20 @@ export async function POST(req) {
         error: "No audio file received",
       });
     }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return Response.json(
+        {
+          success: false,
+          error: "Missing OPENAI_API_KEY in Vercel Environment Variables",
+        },
+        { status: 500 }
+      );
+    }
+
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
 
     const transcript = await openai.audio.transcriptions.create({
       file: audio,
