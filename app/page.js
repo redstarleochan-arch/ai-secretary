@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "ai-secretary-tasks-v1";
 
@@ -35,6 +35,8 @@ const CATEGORIES = [
   },
 ];
 
+const CATEGORY_KEYS = CATEGORIES.map((category) => category.key);
+
 const cardStyle = {
   padding: 16,
   border: "1px solid #d7dde5",
@@ -57,12 +59,25 @@ function safeText(value) {
   return text;
 }
 
+function sortTasks(tasks) {
+  return [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+function prepareStoredTasks(tasks) {
+  return tasks.map((task, index) => ({
+    ...task,
+    category: CATEGORY_KEYS.includes(task.category) ? task.category : "low_priority",
+    order: Number.isFinite(task.order) ? task.order : index,
+    status: task.status || "open",
+  }));
+}
+
 function loadTasks() {
   if (typeof window === "undefined") return [];
 
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? prepareStoredTasks(parsed) : [];
   } catch {
     return [];
   }
@@ -82,7 +97,7 @@ function itemTitle(item) {
   );
 }
 
-function normalizeTask(category, item) {
+function normalizeTask(category, item, order) {
   const nextAction =
     safeText(item.next_action) ||
     safeText(item.next_follow_up) ||
@@ -108,6 +123,7 @@ function normalizeTask(category, item) {
     person,
     reason: safeText(item.risk) || safeText(item.why_it_matters) || safeText(item.reason),
     status: "open",
+    order,
     createdAt: new Date().toISOString(),
   };
 }
@@ -118,56 +134,139 @@ function tasksFromAnalysis(analysis) {
   for (const category of CATEGORIES) {
     const source = category.key === "low_priority" ? analysis.low_priority : analysis[category.key];
     for (const item of Array.isArray(source) ? source : []) {
-      tasks.push(normalizeTask(category.key, item));
+      tasks.push(normalizeTask(category.key, item, tasks.length));
     }
   }
 
   return tasks;
 }
 
-function TaskCard({ task, onDone, onDelete }) {
+function getInitialView() {
+  if (typeof window === "undefined") return "capture";
+  return window.location.hash === "#tasks" ? "tasks" : "capture";
+}
+
+function TaskCard({
+  task,
+  index,
+  columnLength,
+  dragOverTaskId,
+  onDone,
+  onDelete,
+  onMoveCategory,
+  onMoveStep,
+  onDragStart,
+  onDragEnd,
+  onDropOnTask,
+  onDragOverTask,
+}) {
   const category = CATEGORIES.find((item) => item.key === task.category) || CATEGORIES[3];
 
   return (
     <article
+      draggable
+      onDragStart={(event) => onDragStart(event, task.id)}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) => onDragOverTask(event, task.id)}
+      onDrop={(event) => onDropOnTask(event, task.category, task.id)}
       style={{
         border: "1px solid #e5e7eb",
         borderLeft: `5px solid ${category.color}`,
         borderRadius: 8,
         padding: 12,
         background: category.bg,
+        opacity: task.status === "done" ? 0.62 : 1,
+        boxShadow: dragOverTaskId === task.id ? "0 0 0 2px #111827 inset" : "none",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <div>
-          <strong style={{ color: category.color }}>{category.label}</strong>
-          <h4 style={{ margin: "6px 0", fontSize: 17 }}>{task.title}</h4>
-          {task.nextAction && (
-            <p style={{ margin: "6px 0" }}>
-              <strong>下一步：</strong>
-              {task.nextAction}
-            </p>
-          )}
-          {task.person && (
-            <p style={{ margin: "6px 0", color: "#4b5563" }}>
-              <strong>相關人：</strong>
-              {task.person}
-            </p>
-          )}
-          {task.due && (
-            <p style={{ margin: "6px 0", color: "#4b5563" }}>
-              <strong>時間：</strong>
-              {task.due}
-            </p>
-          )}
-          {task.reason && (
-            <p style={{ margin: "6px 0", color: "#4b5563" }}>
-              <strong>原因：</strong>
-              {task.reason}
-            </p>
-          )}
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <strong style={{ color: category.color }}>{category.label}</strong>
+            <h4 style={{ margin: "6px 0", fontSize: 17 }}>{task.title}</h4>
+          </div>
+          <span
+            aria-hidden="true"
+            style={{
+              color: "#6b7280",
+              cursor: "grab",
+              fontSize: 22,
+              lineHeight: 1,
+              paddingTop: 2,
+            }}
+          >
+            ::
+          </span>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+        {task.nextAction && (
+          <p style={{ margin: 0 }}>
+            <strong>下一步：</strong>
+            {task.nextAction}
+          </p>
+        )}
+        {task.person && (
+          <p style={{ margin: 0, color: "#4b5563" }}>
+            <strong>相關人：</strong>
+            {task.person}
+          </p>
+        )}
+        {task.due && (
+          <p style={{ margin: 0, color: "#4b5563" }}>
+            <strong>時間：</strong>
+            {task.due}
+          </p>
+        )}
+        {task.reason && (
+          <p style={{ margin: 0, color: "#4b5563" }}>
+            <strong>原因：</strong>
+            {task.reason}
+          </p>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8 }}>
+          <label style={{ display: "grid", gap: 4, fontSize: 14, color: "#4b5563" }}>
+            改分類
+            <select
+              value={task.category}
+              onChange={(event) => onMoveCategory(task.id, event.target.value)}
+              style={{
+                width: "100%",
+                minHeight: 38,
+                border: "1px solid #9ca3af",
+                borderRadius: 8,
+                background: "#fff",
+                padding: "0 8px",
+                fontSize: 15,
+              }}
+            >
+              {CATEGORIES.map((item) => (
+                <option key={item.key} value={item.key}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            onClick={() => onMoveStep(task.id, -1)}
+            disabled={index === 0}
+            style={{ ...buttonStyle, minWidth: 44, padding: 8, background: "#fff" }}
+            aria-label="上移"
+          >
+            ↑
+          </button>
+          <button
+            onClick={() => onMoveStep(task.id, 1)}
+            disabled={index === columnLength - 1}
+            style={{ ...buttonStyle, minWidth: 44, padding: 8, background: "#fff" }}
+            aria-label="下移"
+          >
+            ↓
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {task.status !== "done" && (
             <button onClick={() => onDone(task.id)} style={{ ...buttonStyle, background: "#dcfce7" }}>
               完成
@@ -182,17 +281,55 @@ function TaskCard({ task, onDone, onDelete }) {
   );
 }
 
-function TaskColumn({ category, tasks, onDone, onDelete }) {
+function TaskColumn({
+  category,
+  tasks,
+  dragOverCategory,
+  dragOverTaskId,
+  onDone,
+  onDelete,
+  onMoveCategory,
+  onMoveStep,
+  onDragStart,
+  onDragEnd,
+  onDropOnTask,
+  onDropOnColumn,
+  onDragOverTask,
+  onDragOverColumn,
+}) {
   return (
-    <section style={cardStyle}>
+    <section
+      onDragOver={(event) => onDragOverColumn(event, category.key)}
+      onDrop={(event) => onDropOnColumn(event, category.key)}
+      style={{
+        ...cardStyle,
+        background: dragOverCategory === category.key ? "#f8fafc" : "#fff",
+        boxShadow: dragOverCategory === category.key ? `0 0 0 2px ${category.color} inset` : "none",
+        minHeight: 220,
+      }}
+    >
       <h3 style={{ margin: "0 0 4px", color: category.color }}>{category.label}</h3>
       <p style={{ margin: "0 0 12px", color: "#6b7280" }}>{category.helper}</p>
       <div style={{ display: "grid", gap: 10 }}>
         {tasks.length === 0 ? (
           <p style={{ margin: 0, color: "#9ca3af" }}>暫時冇。</p>
         ) : (
-          tasks.map((task) => (
-            <TaskCard key={task.id} task={task} onDone={onDone} onDelete={onDelete} />
+          tasks.map((task, index) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              index={index}
+              columnLength={tasks.length}
+              dragOverTaskId={dragOverTaskId}
+              onDone={onDone}
+              onDelete={onDelete}
+              onMoveCategory={onMoveCategory}
+              onMoveStep={onMoveStep}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onDropOnTask={onDropOnTask}
+              onDragOverTask={onDragOverTask}
+            />
           ))
         )}
       </div>
@@ -200,7 +337,35 @@ function TaskColumn({ category, tasks, onDone, onDelete }) {
   );
 }
 
+function Navigation({ view, setView, openCount }) {
+  return (
+    <nav style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <button
+        onClick={() => setView("capture")}
+        style={{
+          ...buttonStyle,
+          background: view === "capture" ? "#111827" : "#fff",
+          color: view === "capture" ? "#fff" : "#111827",
+        }}
+      >
+        輸入任務
+      </button>
+      <button
+        onClick={() => setView("tasks")}
+        style={{
+          ...buttonStyle,
+          background: view === "tasks" ? "#111827" : "#fff",
+          color: view === "tasks" ? "#fff" : "#111827",
+        }}
+      >
+        Task list ({openCount})
+      </button>
+    </nav>
+  );
+}
+
 export default function Home() {
+  const [view, setViewState] = useState("capture");
   const [tasks, setTasks] = useState([]);
   const [notes, setNotes] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -210,6 +375,9 @@ export default function Home() {
   const [recording, setRecording] = useState(false);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [draggedTaskId, setDraggedTaskId] = useState("");
+  const [dragOverCategory, setDragOverCategory] = useState("");
+  const [dragOverTaskId, setDragOverTaskId] = useState("");
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -217,11 +385,27 @@ export default function Home() {
 
   useEffect(() => {
     setTasks(loadTasks());
+    setViewState(getInitialView());
+
+    function syncHash() {
+      setViewState(getInitialView());
+    }
+
+    window.addEventListener("hashchange", syncHash);
+    return () => window.removeEventListener("hashchange", syncHash);
   }, []);
 
+  function setView(nextView) {
+    setViewState(nextView);
+    if (typeof window !== "undefined") {
+      window.history.pushState(null, "", nextView === "tasks" ? "#tasks" : "#input");
+    }
+  }
+
   function persist(nextTasks) {
-    setTasks(nextTasks);
-    saveTasks(nextTasks);
+    const orderedTasks = nextTasks.map((task, index) => ({ ...task, order: index }));
+    setTasks(orderedTasks);
+    saveTasks(orderedTasks);
   }
 
   function getBestAudioMimeType() {
@@ -356,6 +540,7 @@ export default function Home() {
         setAudioFile(null);
         setRecordedBlob(null);
         setRecordedUrl("");
+        setView("tasks");
       }
     } catch (err) {
       setStatus("分類失敗：" + err.message);
@@ -376,7 +561,90 @@ export default function Home() {
     persist(tasks.filter((task) => task.status !== "done"));
   }
 
-  const openTasks = tasks.filter((task) => task.status !== "done");
+  function moveTask(taskId, targetCategory, beforeTaskId = "") {
+    const movingTask = tasks.find((task) => task.id === taskId);
+    if (!movingTask) return;
+
+    const rest = tasks.filter((task) => task.id !== taskId);
+    const nextTask = { ...movingTask, category: targetCategory };
+    const lastTargetIndex = rest.reduce(
+      (latest, task, index) => (task.category === targetCategory ? index : latest),
+      -1
+    );
+    const targetIndex = beforeTaskId
+      ? rest.findIndex((task) => task.id === beforeTaskId)
+      : lastTargetIndex + 1;
+
+    if (targetIndex < 0) {
+      persist([...rest, nextTask]);
+      return;
+    }
+
+    persist([...rest.slice(0, targetIndex), nextTask, ...rest.slice(targetIndex)]);
+  }
+
+  function moveCategory(taskId, category) {
+    moveTask(taskId, category);
+  }
+
+  function moveStep(taskId, direction) {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) return;
+
+    const sameColumn = sortTasks(tasks.filter((item) => item.category === task.category && item.status !== "done"));
+    const index = sameColumn.findIndex((item) => item.id === taskId);
+    const target = sameColumn[index + direction];
+    if (!target) return;
+
+    const nextTasks = [...tasks];
+    const taskIndex = nextTasks.findIndex((item) => item.id === taskId);
+    const targetIndex = nextTasks.findIndex((item) => item.id === target.id);
+    const [removed] = nextTasks.splice(taskIndex, 1);
+    nextTasks.splice(targetIndex, 0, removed);
+    persist(nextTasks);
+  }
+
+  function handleDragStart(event, taskId) {
+    setDraggedTaskId(taskId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", taskId);
+  }
+
+  function resetDragState() {
+    setDraggedTaskId("");
+    setDragOverCategory("");
+    setDragOverTaskId("");
+  }
+
+  function handleDragOverColumn(event, category) {
+    event.preventDefault();
+    setDragOverCategory(category);
+  }
+
+  function handleDragOverTask(event, taskId) {
+    event.preventDefault();
+    setDragOverTaskId(taskId);
+  }
+
+  function handleDropOnColumn(event, category) {
+    event.preventDefault();
+    const taskId = event.dataTransfer.getData("text/plain") || draggedTaskId;
+    if (taskId) moveTask(taskId, category);
+    resetDragState();
+  }
+
+  function handleDropOnTask(event, category, beforeTaskId) {
+    event.preventDefault();
+    event.stopPropagation();
+    const taskId = event.dataTransfer.getData("text/plain") || draggedTaskId;
+    if (taskId && taskId !== beforeTaskId) moveTask(taskId, category, beforeTaskId);
+    resetDragState();
+  }
+
+  const openTasks = useMemo(
+    () => sortTasks(tasks.filter((task) => task.status !== "done")),
+    [tasks]
+  );
   const todayTasks = openTasks.filter(
     (task) => task.category === "critical" || task.category === "follow_up"
   );
@@ -391,137 +659,183 @@ export default function Home() {
         color: "#111827",
       }}
     >
-      <header style={{ marginBottom: 18 }}>
-        <h1 style={{ margin: 0 }}>AI Secretary</h1>
-        <p style={{ margin: "6px 0 0", color: "#4b5563" }}>
-          講低一件事，先轉文字，再分成 Critical / Waiting / Follow-up / Someday。
-        </p>
-      </header>
-
-      <section style={{ ...cardStyle, background: "#111827", color: "#fff", marginBottom: 18 }}>
-        <h2 style={{ marginTop: 0 }}>今日要處理咩</h2>
-        {todayTasks.length === 0 ? (
-          <p style={{ marginBottom: 0, color: "#d1d5db" }}>暫時冇 Critical / Follow-up。</p>
-        ) : (
-          <div style={{ display: "grid", gap: 10 }}>
-            {todayTasks.map((task) => (
-              <TaskCard key={task.id} task={task} onDone={markDone} onDelete={deleteTask} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section style={{ ...cardStyle, marginBottom: 18 }}>
-        <h2 style={{ marginTop: 0 }}>新增 update</h2>
-
-        <div style={{ display: "grid", gap: 12 }}>
-          <button
-            onClick={recording ? stopRecording : startRecording}
-            disabled={busy}
-            style={{
-              ...buttonStyle,
-              background: recording ? "#fee2e2" : "#dbeafe",
-              fontSize: 18,
-            }}
-          >
-            {recording ? "停止錄音" : "開始錄音"}
-          </button>
-
-          <label>
-            或者上傳音訊：
-            <input
-              type="file"
-              accept="audio/*"
-              onChange={handleAudioUpload}
-              disabled={busy || recording}
-              style={{ display: "block", marginTop: 8 }}
-            />
-          </label>
-
-          {recordedUrl && <audio controls src={recordedUrl} style={{ width: "100%" }} />}
-
-          <button
-            onClick={transcribeAudio}
-            disabled={busy || recording || (!recordedBlob && !audioFile)}
-            style={{ ...buttonStyle, background: "#f8fafc" }}
-          >
-            轉成文字
-          </button>
-
-          <label>
-            語音轉文字 / 你要分類嘅內容：
-            <textarea
-              value={transcript}
-              onChange={(event) => setTranscript(event.target.value)}
-              placeholder="語音轉文字會出喺呢度。你可以先改錯字，再分類。"
-              style={{
-                display: "block",
-                marginTop: 8,
-                width: "100%",
-                minHeight: 150,
-                padding: 12,
-                border: "1px solid #a9b2bd",
-                borderRadius: 8,
-                boxSizing: "border-box",
-                fontSize: 16,
-              }}
-            />
-          </label>
-
-          <label>
-            補充文字：
-            <textarea
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder="例如：石 10號出貨，大志未覆；客戶星期五前要確認 invoice。"
-              style={{
-                display: "block",
-                marginTop: 8,
-                width: "100%",
-                minHeight: 90,
-                padding: 12,
-                border: "1px solid #a9b2bd",
-                borderRadius: 8,
-                boxSizing: "border-box",
-                fontSize: 16,
-              }}
-            />
-          </label>
-
-          <button
-            onClick={classifyAndSave}
-            disabled={busy || recording}
-            style={{ ...buttonStyle, background: "#2563eb", color: "#fff", fontSize: 18 }}
-          >
-            分類並儲存成 task list
-          </button>
-
-          <p style={{ minHeight: 24, margin: 0, color: "#4b5563", whiteSpace: "pre-wrap" }}>
-            {status}
+      <header
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 16,
+          alignItems: "flex-start",
+          flexWrap: "wrap",
+          marginBottom: 18,
+        }}
+      >
+        <div>
+          <h1 style={{ margin: 0 }}>AI Secretary</h1>
+          <p style={{ margin: "6px 0 0", color: "#4b5563" }}>
+            講低一件事，先轉文字，再分成 Critical / Waiting / Follow-up / Someday。
           </p>
         </div>
-      </section>
+        <Navigation view={view} setView={setView} openCount={openTasks.length} />
+      </header>
 
-      <section style={{ marginBottom: 18 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2>Task list</h2>
-          <button onClick={clearCompleted} style={{ ...buttonStyle, background: "#fff" }}>
-            清走已完成
-          </button>
-        </div>
+      {view === "capture" ? (
+        <section style={{ ...cardStyle, maxWidth: 760, margin: "0 auto" }}>
+          <h2 style={{ marginTop: 0 }}>輸入任務</h2>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
-          {CATEGORIES.map((category) => (
-            <TaskColumn
-              key={category.key}
-              category={category}
-              tasks={openTasks.filter((task) => task.category === category.key)}
-              onDone={markDone}
-              onDelete={deleteTask}
-            />
-          ))}
-        </div>
-      </section>
+          <div style={{ display: "grid", gap: 12 }}>
+            <button
+              onClick={recording ? stopRecording : startRecording}
+              disabled={busy}
+              style={{
+                ...buttonStyle,
+                background: recording ? "#fee2e2" : "#dbeafe",
+                fontSize: 18,
+              }}
+            >
+              {recording ? "停止錄音" : "開始錄音"}
+            </button>
+
+            <label>
+              或者上傳音訊：
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={handleAudioUpload}
+                disabled={busy || recording}
+                style={{ display: "block", marginTop: 8 }}
+              />
+            </label>
+
+            {recordedUrl && <audio controls src={recordedUrl} style={{ width: "100%" }} />}
+
+            <button
+              onClick={transcribeAudio}
+              disabled={busy || recording || (!recordedBlob && !audioFile)}
+              style={{ ...buttonStyle, background: "#f8fafc" }}
+            >
+              轉成文字
+            </button>
+
+            <label>
+              語音轉文字 / 你要分類嘅內容：
+              <textarea
+                value={transcript}
+                onChange={(event) => setTranscript(event.target.value)}
+                placeholder="語音轉文字會出喺呢度。你可以先改錯字，再分類。"
+                style={{
+                  display: "block",
+                  marginTop: 8,
+                  width: "100%",
+                  minHeight: 180,
+                  padding: 12,
+                  border: "1px solid #a9b2bd",
+                  borderRadius: 8,
+                  boxSizing: "border-box",
+                  fontSize: 16,
+                }}
+              />
+            </label>
+
+            <label>
+              補充文字：
+              <textarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="例如：石 10號出貨，大志未覆；客戶星期五前要確認 invoice。"
+                style={{
+                  display: "block",
+                  marginTop: 8,
+                  width: "100%",
+                  minHeight: 90,
+                  padding: 12,
+                  border: "1px solid #a9b2bd",
+                  borderRadius: 8,
+                  boxSizing: "border-box",
+                  fontSize: 16,
+                }}
+              />
+            </label>
+
+            <button
+              onClick={classifyAndSave}
+              disabled={busy || recording}
+              style={{ ...buttonStyle, background: "#2563eb", color: "#fff", fontSize: 18 }}
+            >
+              分類並儲存成 task list
+            </button>
+
+            <p style={{ minHeight: 24, margin: 0, color: "#4b5563", whiteSpace: "pre-wrap" }}>
+              {status}
+            </p>
+          </div>
+        </section>
+      ) : (
+        <>
+          <section style={{ ...cardStyle, background: "#111827", color: "#fff", marginBottom: 18 }}>
+            <h2 style={{ marginTop: 0 }}>今日要處理咩</h2>
+            {todayTasks.length === 0 ? (
+              <p style={{ marginBottom: 0, color: "#d1d5db" }}>暫時冇 Critical / Follow-up。</p>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {todayTasks.map((task, index) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    index={index}
+                    columnLength={todayTasks.length}
+                    dragOverTaskId={dragOverTaskId}
+                    onDone={markDone}
+                    onDelete={deleteTask}
+                    onMoveCategory={moveCategory}
+                    onMoveStep={moveStep}
+                    onDragStart={handleDragStart}
+                    onDragEnd={resetDragState}
+                    onDropOnTask={handleDropOnTask}
+                    onDragOverTask={handleDragOverTask}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+              <h2>Task list</h2>
+              <button onClick={clearCompleted} style={{ ...buttonStyle, background: "#fff" }}>
+                清走已完成
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {CATEGORIES.map((category) => (
+                <TaskColumn
+                  key={category.key}
+                  category={category}
+                  tasks={openTasks.filter((task) => task.category === category.key)}
+                  dragOverCategory={dragOverCategory}
+                  dragOverTaskId={dragOverTaskId}
+                  onDone={markDone}
+                  onDelete={deleteTask}
+                  onMoveCategory={moveCategory}
+                  onMoveStep={moveStep}
+                  onDragStart={handleDragStart}
+                  onDragEnd={resetDragState}
+                  onDropOnTask={handleDropOnTask}
+                  onDropOnColumn={handleDropOnColumn}
+                  onDragOverTask={handleDragOverTask}
+                  onDragOverColumn={handleDragOverColumn}
+                />
+              ))}
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
