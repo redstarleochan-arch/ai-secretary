@@ -368,7 +368,14 @@ function Navigation({ view, setView, openCount, completedCount }) {
   );
 }
 
-function RecordsView({ completedTasks, monthDate, setMonthDate, selectedDate, setSelectedDate }) {
+function RecordsView({
+  completedTasks,
+  monthDate,
+  setMonthDate,
+  selectedDate,
+  setSelectedDate,
+  onRestore,
+}) {
   const completedByDate = completedTasks.reduce((groups, task) => {
     const key = taskCompletedDate(task);
     if (!key) return groups;
@@ -437,9 +444,25 @@ function RecordsView({ completedTasks, monthDate, setMonthDate, selectedDate, se
         {selectedTasks.length === 0 ? (
           <p style={{ color: "#6b7280" }}>呢日暫時冇完成紀錄。</p>
         ) : (
-          <ul style={{ display: "grid", gap: 8, paddingLeft: 20 }}>
+          <ul style={{ display: "grid", gap: 8, paddingLeft: 0, listStyle: "none" }}>
             {selectedTasks.map((task) => (
-              <li key={task.id}>{task.title}</li>
+              <li
+                key={task.id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  alignItems: "center",
+                  border: "1px solid #d7dde5",
+                  borderRadius: 8,
+                  padding: 10,
+                }}
+              >
+                <span>{task.title}</span>
+                <button onClick={() => onRestore(task.id)} style={{ ...buttonStyle, background: "#fff" }}>
+                  放返入未做
+                </button>
+              </li>
             ))}
           </ul>
         )}
@@ -645,6 +668,17 @@ export default function Home() {
           : task
       )
     );
+  }
+
+  function restoreTask(id) {
+    persist(
+      tasks.map((task) =>
+        task.id === id
+          ? { ...task, status: "open", completedAt: undefined, completedDate: undefined }
+          : task
+      )
+    );
+    setView("tasks");
   }
 
   function deleteTask(id) {
@@ -882,6 +916,7 @@ export default function Home() {
           setMonthDate={setMonthDate}
           selectedDate={selectedDate}
           setSelectedDate={setSelectedDate}
+          onRestore={restoreTask}
         />
       ) : (
         <>
